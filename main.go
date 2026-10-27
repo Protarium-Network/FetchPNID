@@ -190,7 +190,6 @@ func handleMiiData(w http.ResponseWriter, r *http.Request) {
 		pid, err = fetchPIDFromPNID(pnid)
 		if err != nil {
 			handleError(w, err)
-			return
 		}
 	}
 
@@ -200,15 +199,32 @@ func handleMiiData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := map[string]interface{}{
-		"name":    mii["name"],
-		"pid":     pid,
-		"user_id": pnid,
-		"data":    mii["data"],
+	acceptHeader := r.Header.Get("Accept")
+	formatQuery := query.Get("format")
+
+	// 1. Fetch and stream the PNG image directly from Pretendo CDN if requested
+	if acceptHeader == "image/png" || formatQuery == "image" || formatQuery == "png" {
+		cdnURL := fmt.Sprintf("https://r2-cdn.pretendo.cc/mii/%d/normal_face.png", pid)
+		resp, err := http.Get(cdnURL)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			// Fallback to standard.png if normal_face.png fails
+			cdnURL = fmt.Sprintf("https://r2-cdn.pretendo.cc/mii/%d/standard.png", pid)
+			resp, err = http.Get(cdnURL)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				http.Error(w, "Mii image not found on CDN", http.StatusNotFound)
+				return
+			}
+		}
+		defer resp.Body.Close()
+
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, resp.Body)
+		return
 	}
 
-	// Return raw binary data if requested via Accept header
-	if r.Header.Get("Accept") == "application/octet-stream" {
+	// 2. Return raw binary stream if requested via Accept header
+	if acceptHeader == "application/octet-stream" {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		dataStr, _ := mii["data"]
 		decoded, _ := base64.StdEncoding.DecodeString(dataStr)
@@ -216,6 +232,15 @@ func handleMiiData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 3. Default JSON response
+	result := map[string]interface{}{
+		"name":    mii["name"],
+		"pid":     pid,
+		"user_id": pnid,
+		"data":    mii["data"],
+	}
+
+	w.Header().Set("Content-Type", "image/png") // Attente: JSON ici
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }
